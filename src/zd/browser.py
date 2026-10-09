@@ -138,10 +138,13 @@ class _WS:
                 if b0 & 0x80:
                     return message.decode()
 
-    def call(self, method, **params):
+    def call(self, method, session_id=None, **params):
         self.next_id += 1
         mid = self.next_id
-        self.send(json.dumps({"id": mid, "method": method, "params": params}))
+        msg = {"id": mid, "method": method, "params": params}
+        if session_id:
+            msg["sessionId"] = session_id
+        self.send(json.dumps(msg))
         while True:
             msg = json.loads(self.recv())
             if msg.get("id") == mid:
@@ -161,6 +164,28 @@ class _WS:
 def _domain_matches(cookie_domain, host):
     d = cookie_domain.lstrip(".")
     return host == d or host.endswith("." + d)
+
+
+_ME_JS = ("fetch('/api/v2/users/me.json',{credentials:'include'}).then(r=>r.json())"
+          ".then(j=>JSON.stringify(j.user&&j.user.id?{id:j.user.id,name:j.user.name}:null))"
+          ".catch(e=>'null')")
+
+
+def _page_user(ws, host):
+    """Who the browser itself is signed in as on `host`, asked from inside a tab there."""
+    tabs = [t for t in ws.call("Target.getTargets").get("targetInfos", [])
+            if t.get("type") == "page" and urlparse(t.get("url", "")).hostname == host]
+    if not tabs:
+        return None
+    sid = ws.call("Target.attachToTarget", targetId=tabs[0]["targetId"], flatten=True)["sessionId"]
+    try:
+        r = ws.call("Runtime.evaluate", session_id=sid, expression=_ME_JS, awaitPromise=True, returnByValue=True)
+        return json.loads((r.get("result") or {}).get("value") or "null")
+    finally:
+        try:
+            ws.call("Target.detachFromTarget", sessionId=sid)
+        except (ConnectionError, OSError):
+            pass
 
 
 def login(instance, host, is_signed_in, timeout=600, say=print):
@@ -207,6 +232,22 @@ def login(instance, host, is_signed_in, timeout=600, say=print):
                 user = is_signed_in(jar)
                 if user:
                     return jar, user
+            try:
+                in_browser = _page_user(ws, host)
+            except (ConnectionError, OSError, ValueError):
+                in_browser = None
+            if in_browser:
+                # The browser is signed in. Give the cookie check one more round
+                # with the very latest cookies before calling it a mismatch.
+                time.sleep(2)
+                all_cookies = ws.call("Storage.getCookies").get("cookies", [])
+                jar = {c["name"]: c["value"] for c in all_cookies if _domain_matches(c["domain"], host)}
+                user = is_signed_in(jar)
+                if user:
+                    return jar, user
+                raise ZdError(f"Webbläsaren är inloggad som {in_browser.get('name')}, men samma cookies räcker inte "
+                              f"utanför den ({', '.join(sorted(jar))}). Zendesk binder sessionen till webbläsaren; "
+                              "det här behöver lösas i zd, inte av dig.")
             time.sleep(2)
         raise ZdError("Ingen inloggning inom tiden. Inget sparat.")
     finally:
