@@ -529,8 +529,9 @@ def main(argv=None):
 
     s = _parser(sub, "login", "sign in through a browser window and store the session",
                 "Opens Chrome/Edge with a profile of its own for NAME at the agent workspace.\n"
-                "Sign in as usual (Microsoft, Google, password + 2FA). The window closes itself\n"
-                "once Zendesk knows you, and the session cookies go to the OS keychain.\n"
+                "Sign in as usual (Microsoft, Google, password + 2FA). Close the window\n"
+                "when you see Zendesk; the session is then read out of the profile and goes to\n"
+                "the OS keychain. The window is a plain browser, never driven by zd.\n"
                 "Run it again whenever a command says the session has expired.",
                 "examples:\n  zd login vartex\n  zd login wesports --subdomain wesportshelp")
     s.add_argument("name", help="a short name for this Zendesk, e.g. vartex")

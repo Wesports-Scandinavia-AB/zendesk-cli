@@ -10,7 +10,7 @@ Zendesk's own web UI calls, with exactly your permissions.
     s.get("/api/v2/tickets/123.json")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 class ZdError(Exception):

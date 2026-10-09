@@ -12,8 +12,8 @@ API-nyckel. Den ser och får göra exakt det personen ser och får göra i webbe
 
 - `zd account list` visar sparade inloggningar. Är listan tom, eller säger ett kommando
   att sessionen gått ut: kör `zd login NAMN` i bakgrunden (`run_in_background`) och be
-  personen logga in i fönstret som öppnas. Fönstret stänger sig självt när inloggningen
-  är klar. Be aldrig om lösenord eller cookies i chatten.
+  personen logga in i fönstret som öppnas. Personen stänger fönstret när
+  Zendesk syns; då sparas sessionen och kommandot blir klart. Be aldrig om lösenord eller cookies i chatten.
 - Fler än en inloggning: välj med `-a NAMN`.
 - `--json` ger rådata. Använd det när du ska räkna, filtrera eller citera fält.
 

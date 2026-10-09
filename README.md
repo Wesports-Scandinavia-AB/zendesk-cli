@@ -3,8 +3,8 @@
 Zendesk från terminalen, inloggad som dig själv. Ingen API-nyckel.
 
 `zd login` öppnar ett webbläsarfönster en gång. Du loggar in som vanligt (Microsoft,
-Google, lösenord och 2FA), fönstret stänger sig självt, och sessionen sparas i din
-nyckelring. Därefter går allt över vanlig HTTPS mot samma adresser som Zendesks eget
+Google, lösenord och 2FA) och stänger fönstret när du ser Zendesk. Sessionen sparas då i
+din nyckelring. Därefter går allt över vanlig HTTPS mot samma adresser som Zendesks eget
 webbgränssnitt anropar, med exakt dina behörigheter. Webbläsaren behöver inte vara
 öppen.
 
@@ -58,6 +58,9 @@ stoppar med ett fel.
   login-nyckelringen på macOS. Aldrig i en fil.
 - Den som har cookies **är** du i Zendesk tills sessionen går ut. Dela dem aldrig.
   `zd logout` avslutar sessionen hos Zendesk också.
+- Inloggningsfönstret är en helt vanlig Chrome, utan DevTools eller automatisering;
+  annars stoppar Zendesks Cloudflare inloggningen. Sessionen läses ur profilen först
+  när fönstret är stängt.
 - Webbläsarprofilen ligger per instans i `%LOCALAPPDATA%\zendesk-cli\profiles\<namn>`
   och minns SSO-inloggningen, så nästa `zd login` tar ett par klick.
 - Zendesk förnyar sessionen när den används. `zd` sparar de förnyade cookies, så en

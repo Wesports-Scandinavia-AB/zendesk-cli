@@ -6,12 +6,13 @@ Zendesk's login page sits behind bot protection (a plain HTTP request to
 anyway, so there is no login form to fill in from code. Instead:
 
   1. Start Chrome (or Edge) with a profile of its own per instance, under
-     %LOCALAPPDATA%\\zendesk-cli\\profiles\\<instance>, and DevTools on a free
-     port. The profile is kept, so the SSO provider remembers you next time.
-  2. The person signs in in that window. Nothing is typed by us, and nothing
-     attaches to the page (see the login section for why).
-  3. We poll the browser's cookie store until Zendesk says the session belongs
-     to a real user, then close the browser.
+     %LOCALAPPDATA%\\zendesk-cli\\profiles\\<instance>, and nothing else: no
+     DevTools, no flags. The profile is kept, so the SSO provider remembers
+     you next time.
+  2. The person signs in in that window and closes it. Nothing is typed by us.
+  3. The same profile is started headless with DevTools and its last session
+     restored, and the cookies are read out. Zendesk then says whether they
+     belong to a real user.
 
 The DevTools protocol speaks WebSocket. The standard library has no client, so a
 minimal one is here: text frames, client masking, fragmented replies. Enough for
@@ -162,69 +163,83 @@ class _WS:
 
 # ---- login ----------------------------------------------------------------------
 #
-# Zendesk sits behind Cloudflare, and Cloudflare's challenge fails ("you are a
-# bot") when a page is being driven over DevTools: attaching to the tab and
-# running script in it is visible from inside the page. So nothing here ever
-# attaches to a page. Only the browser-level cookie store is read, which no
-# script in the page can see.
+# The window the person signs in in is a plain Chrome: a profile of its own and
+# nothing else, no DevTools port, nothing attached. Zendesk sits behind
+# Cloudflare, whose challenge says "you are a bot" to a browser that is being
+# driven, and the honest fix is to not drive it.
 #
-# Reading the cookies after the window closes does not work either: Zendesk's
-# session cookies have no expiry date and Chrome drops them on exit, and the
-# setting that would keep them is protected against changes from outside.
+# The cookies are read afterwards. Zendesk's session cookies have no expiry date,
+# so a normal start of the profile deletes them; started with
+# --restore-last-session, Chrome keeps them as it does for "continue where you
+# left off". That start is headless, with DevTools, and only reads the cookie
+# store; the tabs it restores are never attached to.
 
 def _domain_matches(cookie_domain, host):
     d = cookie_domain.lstrip(".")
     return host == d or host.endswith("." + d)
 
 
-def login(instance, host, is_signed_in, timeout=900, say=print):
-    """Open the browser at the agent workspace and wait for a real session.
-
-    `is_signed_in(cookies)` is asked with each new set of cookies and returns
-    the Zendesk user when the session is real, else None. Returns
-    (cookies, user) where cookies is {name: value} for `host`.
-    """
-    exe = find_browser()
+def read_cookies(instance, host):
+    """The cookies the profile holds for `host`, read from a headless start of it."""
     prof = profile_dir(instance)
-    prof.mkdir(parents=True, exist_ok=True)
     port_file = prof / "DevToolsActivePort"
     if port_file.exists():
         port_file.unlink()
     proc = subprocess.Popen(
-        [exe, f"--user-data-dir={prof}", "--remote-debugging-port=0", "--no-first-run",
-         "--no-default-browser-check", "--new-window", f"https://{host}/agent"],
+        [find_browser(), "--headless=new", f"--user-data-dir={prof}", "--remote-debugging-port=0",
+         "--no-first-run", "--no-default-browser-check", "--restore-last-session"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    deadline = time.time() + 30
-    while not port_file.exists():
-        if time.time() > deadline or proc.poll() not in (None, 0):
-            raise ZdError("Webbläsaren startade inte. Stäng andra fönster med samma profil och försök igen.")
-        time.sleep(0.2)
-    time.sleep(0.3)
-    port, path = port_file.read_text().splitlines()[:2]
-    ws = _WS(f"ws://127.0.0.1:{port.strip()}{path.strip()}")
-
-    say(f"Logga in på {host} i webbläsarfönstret som öppnades. Det stängs av sig självt när du är inne.")
-    seen = None
-    deadline = time.time() + timeout
     try:
-        while time.time() < deadline:
+        deadline = time.time() + 30
+        while not port_file.exists():
+            if time.time() > deadline or proc.poll() is not None:
+                raise ZdError("Profilen gick inte att öppna. Är inloggningsfönstret fortfarande öppet?")
+            time.sleep(0.2)
+        time.sleep(0.3)
+        port, path = port_file.read_text().splitlines()[:2]
+        ws = _WS(f"ws://127.0.0.1:{port.strip()}{path.strip()}")
+        try:
+            cookies = ws.call("Storage.getCookies").get("cookies", [])
             try:
-                all_cookies = ws.call("Storage.getCookies").get("cookies", [])
+                ws.call("Browser.close")
             except (ConnectionError, OSError):
-                raise ZdError("Webbläsaren stängdes innan inloggningen var klar. Inget sparat.")
-            jar = {c["name"]: c["value"] for c in all_cookies if _domain_matches(c["domain"], host)}
-            key = tuple(sorted(jar.items()))
-            if jar and key != seen:
-                seen = key
-                user = is_signed_in(jar)
-                if user:
-                    return jar, user
-            time.sleep(2)
-        raise ZdError("Ingen inloggning inom tiden. Inget sparat.")
+                pass
+        finally:
+            ws.close()
     finally:
         try:
-            ws.call("Browser.close")
-        except (ConnectionError, OSError):
-            pass
-        ws.close()
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    return {c["name"]: c["value"] for c in cookies if _domain_matches(c["domain"], host)}
+
+
+def login(instance, host, is_signed_in, timeout=900, say=print):
+    """Let the person sign in in a plain window, then read the session out of the profile.
+
+    `is_signed_in(cookies)` returns the Zendesk user when the cookies are a real
+    session, else None. Returns (cookies, user).
+    """
+    prof = profile_dir(instance)
+    prof.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    proc = subprocess.Popen(
+        [find_browser(), f"--user-data-dir={prof}", "--no-first-run", "--no-default-browser-check",
+         f"https://{host}/agent"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    say(f"Logga in på {host} i webbläsarfönstret som öppnades. STÄNG FÖNSTRET när du ser Zendesk, "
+        "så hämtas sessionen.")
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        raise ZdError("Fönstret var öppet i 15 minuter. Inget sparat; kör `zd login` igen.")
+    if time.time() - started < 5:
+        raise ZdError("Webbläsaren stängdes direkt. Är ett fönster med samma profil redan öppet? Stäng det och försök igen.")
+    time.sleep(1)  # let the profile's lock go
+    jar = read_cookies(instance, host)
+    user = is_signed_in(jar) if jar else None
+    if not user:
+        raise ZdError("Ingen inloggad session i profilen efter att fönstret stängdes. "
+                      "Kom du hela vägen in i Zendesk innan du stängde?")
+    return jar, user
