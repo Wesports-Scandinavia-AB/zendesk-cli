@@ -8,9 +8,10 @@ anyway, so there is no login form to fill in from code. Instead:
   1. Start Chrome (or Edge) with a profile of its own per instance, under
      %LOCALAPPDATA%\\zendesk-cli\\profiles\\<instance>, and DevTools on a free
      port. The profile is kept, so the SSO provider remembers you next time.
-  2. The person signs in in that window. Nothing is typed by us.
-  3. We poll the cookies over the DevTools protocol until Zendesk says the
-     session belongs to a real user, then close the browser.
+  2. The person signs in in that window. Nothing is typed by us, and nothing
+     attaches to the page (see the login section for why).
+  3. We poll the browser's cookie store until Zendesk says the session belongs
+     to a real user, then close the browser.
 
 The DevTools protocol speaks WebSocket. The standard library has no client, so a
 minimal one is here: text frames, client masking, fragmented replies. Enough for
@@ -160,35 +161,23 @@ class _WS:
 
 
 # ---- login ----------------------------------------------------------------------
+#
+# Zendesk sits behind Cloudflare, and Cloudflare's challenge fails ("you are a
+# bot") when a page is being driven over DevTools: attaching to the tab and
+# running script in it is visible from inside the page. So nothing here ever
+# attaches to a page. Only the browser-level cookie store is read, which no
+# script in the page can see.
+#
+# Reading the cookies after the window closes does not work either: Zendesk's
+# session cookies have no expiry date and Chrome drops them on exit, and the
+# setting that would keep them is protected against changes from outside.
 
 def _domain_matches(cookie_domain, host):
     d = cookie_domain.lstrip(".")
     return host == d or host.endswith("." + d)
 
 
-_ME_JS = ("fetch('/api/v2/users/me.json',{credentials:'include'}).then(r=>r.json())"
-          ".then(j=>JSON.stringify(j.user&&j.user.id?{id:j.user.id,name:j.user.name}:null))"
-          ".catch(e=>'null')")
-
-
-def _page_user(ws, host):
-    """Who the browser itself is signed in as on `host`, asked from inside a tab there."""
-    tabs = [t for t in ws.call("Target.getTargets").get("targetInfos", [])
-            if t.get("type") == "page" and urlparse(t.get("url", "")).hostname == host]
-    if not tabs:
-        return None
-    sid = ws.call("Target.attachToTarget", targetId=tabs[0]["targetId"], flatten=True)["sessionId"]
-    try:
-        r = ws.call("Runtime.evaluate", session_id=sid, expression=_ME_JS, awaitPromise=True, returnByValue=True)
-        return json.loads((r.get("result") or {}).get("value") or "null")
-    finally:
-        try:
-            ws.call("Target.detachFromTarget", sessionId=sid)
-        except (ConnectionError, OSError):
-            pass
-
-
-def login(instance, host, is_signed_in, timeout=600, say=print):
+def login(instance, host, is_signed_in, timeout=900, say=print):
     """Open the browser at the agent workspace and wait for a real session.
 
     `is_signed_in(cookies)` is asked with each new set of cookies and returns
@@ -201,19 +190,18 @@ def login(instance, host, is_signed_in, timeout=600, say=print):
     port_file = prof / "DevToolsActivePort"
     if port_file.exists():
         port_file.unlink()
-    url = f"https://{host}/agent"
     proc = subprocess.Popen(
         [exe, f"--user-data-dir={prof}", "--remote-debugging-port=0", "--no-first-run",
-         "--no-default-browser-check", "--new-window", url],
+         "--no-default-browser-check", "--new-window", f"https://{host}/agent"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     deadline = time.time() + 30
     while not port_file.exists():
         if time.time() > deadline or proc.poll() not in (None, 0):
-            raise ZdError("Webbläsaren startade inte med DevTools. Stäng andra fönster med samma profil och försök igen.")
+            raise ZdError("Webbläsaren startade inte. Stäng andra fönster med samma profil och försök igen.")
         time.sleep(0.2)
     time.sleep(0.3)
-    port, path = port_file.read_text().split("\n")[:2]
+    port, path = port_file.read_text().splitlines()[:2]
     ws = _WS(f"ws://127.0.0.1:{port.strip()}{path.strip()}")
 
     say(f"Logga in på {host} i webbläsarfönstret som öppnades. Det stängs av sig självt när du är inne.")
@@ -232,22 +220,6 @@ def login(instance, host, is_signed_in, timeout=600, say=print):
                 user = is_signed_in(jar)
                 if user:
                     return jar, user
-            try:
-                in_browser = _page_user(ws, host)
-            except (ConnectionError, OSError, ValueError):
-                in_browser = None
-            if in_browser:
-                # The browser is signed in. Give the cookie check one more round
-                # with the very latest cookies before calling it a mismatch.
-                time.sleep(2)
-                all_cookies = ws.call("Storage.getCookies").get("cookies", [])
-                jar = {c["name"]: c["value"] for c in all_cookies if _domain_matches(c["domain"], host)}
-                user = is_signed_in(jar)
-                if user:
-                    return jar, user
-                raise ZdError(f"Webbläsaren är inloggad som {in_browser.get('name')}, men samma cookies räcker inte "
-                              f"utanför den ({', '.join(sorted(jar))}). Zendesk binder sessionen till webbläsaren; "
-                              "det här behöver lösas i zd, inte av dig.")
             time.sleep(2)
         raise ZdError("Ingen inloggning inom tiden. Inget sparat.")
     finally:
