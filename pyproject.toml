@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zendesk-cli"
+dynamic = ["version"]
+description = "Zendesk from the terminal, signed in as yourself: no API token."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+zd = "zd.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+zd = ["skill/*.md"]
+
+[tool.setuptools.dynamic]
+version = {attr = "zd.__version__"}

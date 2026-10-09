@@ -1,0 +1,19 @@
+# secrets
+.env
+.env.*
+
+# python
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# logs
+*.log
